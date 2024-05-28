@@ -4,6 +4,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const MessageSplitter = require('../lib/message-splitter');
 const MessageJoiner = require('../lib/message-joiner');
+const NodeRewriter = require('../lib/node-rewriter');
 
 module.exports['Split simple message'] = test => {
     let splitter = new MessageSplitter();
@@ -705,3 +706,87 @@ module.exports['Handle really large header'] = test => {
 
     splitter.end(Buffer.concat(chunks));
 };
+
+function hrms() {
+    const time = process.hrtime();
+    return time[0] * 1e3 + Math.floor(time[1] / 1e6);
+}
+
+module.exports['Handle large format=flowed email'] = test => {
+    // eslint-disable-next-line global-require
+    let data = require('./fixtures/generate-large-flowed-email.js');
+
+    let splitter = new MessageSplitter();
+    let rewriter = new NodeRewriter(node => node.contentType && node.flowed);
+    let joiner = new MessageJoiner();
+
+    let foundFlowed = false;
+    rewriter.on('node', data => {
+        foundFlowed = true;
+        // just re-encode existing data, to ensure the flowed decoder is used
+        data.decoder.pipe(data.encoder);
+    });
+
+    splitter
+        .pipe(rewriter)
+        .pipe(joiner)
+        .pipe(fs.createWriteStream('/dev/null'));
+
+    // set up the checking the event loop
+    const intervalMs = 100;
+    let prevMs = hrms();
+    let maxIntervalMs = 0;
+    const handle = setInterval(() => {
+        const ms = hrms();
+        const thisIntervalMs = ms - prevMs;
+        if (thisIntervalMs > maxIntervalMs) maxIntervalMs = thisIntervalMs;
+        prevMs = ms;
+    }, intervalMs);
+
+    // set up the clean-up and checking in the joiner's end handler
+    joiner.once('end', () => {
+        // clean up the checker
+        clearInterval(handle);
+        // check we found a flowed body
+        test.ok(foundFlowed, 'No format=flowed body found');
+        // check if the event loop was blocked
+        test.ok((maxIntervalMs <= (5 * intervalMs)),
+            `Event Loop was paused`
+                + ` for >=${maxIntervalMs - intervalMs}ms`
+                + ` (maxInterval for a ${intervalMs}ms setInterval`
+                + ` was > 5*interval: ${maxIntervalMs}ms)`
+        );
+        test.done();
+    });
+
+    // run the data through the pipeline
+    splitter.end(data);
+};
+
+module.exports['Handle large format=flowed email with pass-through workaround'] = {
+    setUp(callback) {    // eslint-disable-line 
+        // eslint-disable-next-line global-require
+        const FlowedDecoder = require("../lib/flowed-decoder.js");
+        const oldTransform = FlowedDecoder.prototype._transform;
+        const oldFlush = FlowedDecoder.prototype._flush;
+        this.cleanup = () => {
+            FlowedDecoder.prototype._transform = oldTransform;
+            FlowedDecoder.prototype._flush = oldFlush;
+        }
+
+        FlowedDecoder.prototype._transform = function _transform(chunk, enc, cb) { return cb(null, chunk); };
+        FlowedDecoder.prototype._flush = function _flush(cb) { return cb(); };
+
+        callback();
+    },
+
+    test(test) {
+        // eslint-disable-next-line new-cap
+        module.exports['Handle large format=flowed email'](test);
+    },
+
+    tearDown(callback) {
+        this.cleanup();
+        callback();
+    }
+}

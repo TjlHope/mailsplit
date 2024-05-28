@@ -8,6 +8,7 @@ module.exports = function(grunt) {
         },
 
         nodeunit: {
+            splitter: ['test/message-splitter-test.js'],
             all: ['test/**/*-test.js']
         }
     });
@@ -17,5 +18,5 @@ module.exports = function(grunt) {
     grunt.loadNpmTasks('grunt-contrib-nodeunit');
 
     // Tasks
-    grunt.registerTask('default', ['eslint', 'nodeunit']);
+    grunt.registerTask('default', ['eslint:all', 'nodeunit:all']);
 };
